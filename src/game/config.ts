@@ -17,3 +17,17 @@ export const WATER_DRAG = 1.5 // lower = heavier water, longer glide
 
 // Where the pilot's seat sits inside the cockpit model. Put your tuned value here.
 export const COCKPIT_OFFSET = new THREE.Vector3(0, 0, -1)
+
+// Lionfish model (FBX files come in wildly different scales, so it is resized to this length).
+export const LIONFISH_LENGTH = 1.6
+
+// If the fish swims sideways or backwards, try Math.PI / 2, -Math.PI / 2 or Math.PI.
+export const LIONFISH_YAW_OFFSET = 0
+
+// Animation clip names, lowercase with spaces and symbols removed. Any clip whose
+// name contains one of these is used. The console logs the real clip names once.
+export const LIONFISH_CLIPS = {
+  normal: 'swimnormal',
+  fast: 'dolphinswim',
+  idle: 'idleswim',
+}

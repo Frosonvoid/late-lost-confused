@@ -1,6 +1,24 @@
 import { Canvas } from '@react-three/fiber'
 
+import { ErrorBoundary } from './game/ErrorBoundary'
 import { GameScene } from './game/GameScene'
+
+// Any crash is printed on screen instead of leaving a white page.
+function ErrorScreen(error: Error) {
+  return (
+    <pre
+      style={{
+        margin: 0,
+        padding: 24,
+        color: '#ff9b9b',
+        fontFamily: 'monospace',
+        whiteSpace: 'pre-wrap',
+      }}
+    >
+      {error.stack ?? error.message}
+    </pre>
+  )
+}
 
 export default function App() {
   return (
@@ -12,17 +30,19 @@ export default function App() {
         background: '#010812',
       }}
     >
-      <Canvas
-        camera={{
-          position: [0, 0, 0],
-          fov: 80,
-          near: 0.1,
-          far: 10000,
-        }}
-        gl={{ antialias: true }}
-      >
-        <GameScene />
-      </Canvas>
+      <ErrorBoundary fallback={ErrorScreen}>
+        <Canvas
+          camera={{
+            position: [0, 0, 0],
+            fov: 80,
+            near: 0.1,
+            far: 10000,
+          }}
+          gl={{ antialias: true }}
+        >
+          <GameScene />
+        </Canvas>
+      </ErrorBoundary>
 
       {/* Deep-water vignette */}
       <div
