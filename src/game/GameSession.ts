@@ -35,6 +35,10 @@ export class GameSession {
   private snapshot: GameSnapshot
   private readonly listeners = new Set<() => void>()
 
+  private harpoonCharge = 0
+  private readonly chargeListeners = new Set<() => void>()
+  private readonly hullNormal = new THREE.Vector3()
+
   constructor() {
     this.snapshot = this.createSnapshot()
   }
@@ -52,6 +56,24 @@ export class GameSession {
 
   getSnapshot = () => this.snapshot
 
+  subscribeCharge = (listener: () => void) => {
+    this.chargeListeners.add(listener)
+    return () => {
+      this.chargeListeners.delete(listener)
+    }
+  }
+
+  getChargeSnapshot = () => this.harpoonCharge
+
+  setHarpoonCharge(value: number) {
+    const clamped = Math.max(0, Math.min(1, value))
+    if (Math.abs(clamped - this.harpoonCharge) < 0.005 && clamped !== 0 && clamped !== 1) {
+      return
+    }
+    this.harpoonCharge = clamped
+    this.chargeListeners.forEach((listener) => listener())
+  }
+
   update(delta: number, subPosition: THREE.Vector3) {
     if (!this.isPlaying) return
 
@@ -67,8 +89,9 @@ export class GameSession {
     for (const mob of this.mobs) {
       if (!mob.isAlive) continue
 
-      if (mob.position.distanceTo(subPosition) < SUB_COLLISION_RADIUS + mob.hitRadius) {
-        this.collide(mob, subPosition)
+      const minSeparation = SUB_COLLISION_RADIUS + mob.hitRadius
+      if (mob.position.distanceTo(subPosition) < minSeparation) {
+        this.collide(mob, subPosition, minSeparation)
       }
     }
   }
@@ -97,6 +120,7 @@ export class GameSession {
     this.score = 0
     this.event = null
     this.status = 'playing'
+    this.setHarpoonCharge(0)
     this.submarine.reset()
     this.spawner.reset()
 
@@ -113,8 +137,16 @@ export class GameSession {
     return submitScore(name, this.score)
   }
 
-  private collide(mob: Mob, subPosition: THREE.Vector3) {
-    mob.heading.copy(mob.position).sub(subPosition).normalize()
+  private collide(mob: Mob, subPosition: THREE.Vector3, minSeparation: number) {
+    this.hullNormal.copy(mob.position).sub(subPosition)
+    if (this.hullNormal.lengthSq() < 1e-6) {
+      this.hullNormal.set(0, 1, 0)
+    } else {
+      this.hullNormal.normalize()
+    }
+
+    mob.position.copy(subPosition).addScaledVector(this.hullNormal, minSeparation + 0.05)
+    mob.heading.copy(this.hullNormal)
 
     const damage = mob.onCollision()
     if (!this.submarine.takeDamage(damage)) return
@@ -123,6 +155,7 @@ export class GameSession {
 
     if (this.submarine.isDestroyed) {
       this.status = 'gameover'
+      this.setHarpoonCharge(0)
       this.emit()
     }
   }
@@ -149,4 +182,8 @@ export class GameSession {
 
 export function useGameSession(session: GameSession) {
   return useSyncExternalStore(session.subscribe, session.getSnapshot)
+}
+
+export function useHarpoonCharge(session: GameSession) {
+  return useSyncExternalStore(session.subscribeCharge, session.getChargeSnapshot)
 }

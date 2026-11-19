@@ -37,8 +37,6 @@ const NATIVE_COLORS: Record<NativeSpecies, string> = {
 
 const simplify = (name: string) => name.toLowerCase().replace(/[^a-z]/g, '')
 
-let glbInfoLogged = false
-
 function PlaceholderFish({ color, size = 1 }: { color: string; size?: number }) {
   return (
     <group scale={size}>
@@ -59,7 +57,6 @@ function LionfishModel({ url }: { url: string }) {
 
   const { model, normalizedScale } = useMemo(() => {
     const copy = cloneSkinned(scene)
-    const materialNames: string[] = []
 
     copy.traverse((child) => {
       child.visible = true
@@ -73,7 +70,6 @@ function LionfishModel({ url }: { url: string }) {
 
       materials.forEach((mat) => {
         if (!mat) return
-        materialNames.push(mat.name || child.name)
         mat.side = THREE.DoubleSide
 
         const isFin = /fin/i.test(mat.name || child.name)
@@ -83,10 +79,8 @@ function LionfishModel({ url }: { url: string }) {
           mat.roughness = Math.max(mat.roughness, 0.45)
 
           if (isFin && mat.transparent) {
-            // Gentle cutoff so thin fin spikes stay visible.
             mat.alphaTest = 0.1
           } else {
-            // Prevent Unity Albedo alpha channels from making the body/head invisible.
             mat.transparent = false
             mat.alphaTest = 0
             mat.opacity = 1
@@ -106,20 +100,9 @@ function LionfishModel({ url }: { url: string }) {
         ? LIONFISH_LENGTH / longest
         : 1
 
-    if (!glbInfoLogged) {
-      console.info('Lionfish GLB loaded:', {
-        rawSize: size.toArray(),
-        normalizedScale: scale,
-        materials: materialNames,
-        clips: animations.map((clip) => clip.name),
-      })
-      glbInfoLogged = true
-    }
-
     return { model: copy, normalizedScale: scale }
-  }, [scene, animations])
+  }, [scene])
 
-  // Strip root/armature scale tracks so baked Blender animations don't shrink the fish.
   const cleanedAnimations = useMemo(
     () =>
       animations.map((clip) => {
@@ -182,6 +165,8 @@ function MobView({ mob, children }: { mob: Mob; children: ReactNode }) {
     if (!body) return
 
     body.visible = mob.isAlive
+    if (!mob.isAlive) return
+
     body.position.copy(mob.position)
     lookTarget.current.copy(mob.position).add(mob.heading)
     body.lookAt(lookTarget.current)

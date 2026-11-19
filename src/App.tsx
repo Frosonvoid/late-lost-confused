@@ -4,6 +4,7 @@ import { Canvas } from '@react-three/fiber'
 import { ErrorBoundary } from './game/ErrorBoundary'
 import { GameScene } from './game/GameScene'
 import { GameSession } from './game/GameSession'
+import { HarpoonChargeBar } from './game/HarpoonChargeBar'
 import { Hud } from './game/Hud'
 
 // Any crash is printed on screen instead of leaving a white page.
@@ -60,7 +61,7 @@ export default function App() {
         }}
       />
 
-      {/* Targeting reticle */}
+      {/* Targeting reticle & harpoon pressure gauge */}
       <div
         style={{
           position: 'absolute',
@@ -75,6 +76,7 @@ export default function App() {
       >
         +
       </div>
+      <HarpoonChargeBar session={session} />
 
       {/* Score, hull, objective and Game Over screen */}
       <Hud session={session} />
@@ -103,7 +105,7 @@ export default function App() {
         <br />
         MOUSE — LOOK / AIM
         <br />
-        LEFT CLICK — FIRE TORPEDO
+        HOLD LEFT CLICK — CHARGE HARPOON
         <br />
         ESC — RELEASE MOUSE
       </div>

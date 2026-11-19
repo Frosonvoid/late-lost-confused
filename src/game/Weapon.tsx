@@ -1,138 +1,357 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
+import { useGLTF } from '@react-three/drei'
 import * as THREE from 'three'
 
-import {
-  FIRE_COOLDOWN_MS,
-  MAX_TORPEDOES,
-  TORPEDO_LIFETIME,
-  TORPEDO_RADIUS,
-  TORPEDO_SPEED,
-} from './config'
-import type { GameSession } from './GameSession'
+import { useGameSession, type GameSession } from './GameSession'
 
-// One reusable torpedo. Logic only: TorpedoLauncher draws it.
-export class Torpedo {
-  readonly position = new THREE.Vector3()
-  readonly velocity = new THREE.Vector3()
-  active = false
+// --- Tunable Harpoon Charge & Water Physics Constants ---
+const HARPOON_LENGTH = 2.4
+const MIN_LAUNCH_SPEED = 32 // Quick tap: weaker launch, drops & slows down sooner
+const MAX_LAUNCH_SPEED = 105 // Full charge: high-powered pneumatic shot, flat trajectory
+const CHARGE_DURATION = 1.0 // Seconds to reach 100% charge
+const WATER_DRAG = 0.52 // Exponential water resistance bleeding momentum over distance
+const HARPOON_GRAVITY = 6.8 // Downward pull causing slower/longer shots to sink
+const MIN_EFFECTIVE_SPEED = 5.5 // Despawns once piercing momentum is spent
+const MAX_LIFETIME = 5.0
+const FIRE_COOLDOWN = 0.25
+const HARPOON_HIT_RADIUS = 0.45
 
-  private readonly previous = new THREE.Vector3()
-  private readonly path = new THREE.Line3()
-  private readonly closest = new THREE.Vector3()
-  private age = 0
+// Blender's Z-axis (Up) maps to Three.js's Y-axis in .glb exports.
+const HARPOON_MODEL_ROTATION: [number, number, number] = [0, Math.PI / 2, 0]
 
-  launch(origin: THREE.Vector3, direction: THREE.Vector3) {
-    this.position.copy(origin)
-    this.previous.copy(origin)
-    this.velocity.copy(direction).multiplyScalar(TORPEDO_SPEED)
-    this.age = 0
-    this.active = true
-  }
+const glbUrls = import.meta.glob<string>('../assets/*.glb', {
+  query: '?url',
+  import: 'default',
+  eager: true,
+})
 
-  update(delta: number) {
-    if (!this.active) return
+const harpoonUrl = Object.entries(glbUrls).find(([path]) =>
+  /harpoon/i.test(path),
+)?.[1]
 
-    this.previous.copy(this.position)
-    this.position.addScaledVector(this.velocity, delta)
-
-    this.age += delta
-    if (this.age > TORPEDO_LIFETIME) this.active = false
-  }
-
-  // Checks the whole path travelled this frame, so a fast torpedo cannot skip through a fish.
-  hits(center: THREE.Vector3, radius: number) {
-    this.path.set(this.previous, this.position)
-    this.path.closestPointToPoint(center, true, this.closest)
-
-    return this.closest.distanceTo(center) <= radius + TORPEDO_RADIUS
-  }
-
-  detonate() {
-    this.active = false
-  }
+if (harpoonUrl) {
+  useGLTF.preload(harpoonUrl)
+} else {
+  console.warn('No harpoon .glb found in src/assets/, using fallback spear mesh.')
 }
 
-// Left click fires a torpedo along the camera's view while the mouse is captured.
+type HarpoonProjectile = {
+  id: number
+  position: THREE.Vector3
+  velocity: THREE.Vector3
+  age: number
+}
+
+function distanceSqToSegment(
+  point: THREE.Vector3,
+  a: THREE.Vector3,
+  b: THREE.Vector3,
+  scratchAB: THREE.Vector3,
+  scratchAP: THREE.Vector3,
+): number {
+  scratchAB.subVectors(b, a)
+  scratchAP.subVectors(point, a)
+  const lenSq = scratchAB.lengthSq()
+  if (lenSq < 1e-8) return scratchAP.lengthSq()
+  const t = THREE.MathUtils.clamp(scratchAP.dot(scratchAB) / lenSq, 0, 1)
+  return scratchAP.addScaledVector(scratchAB, -t).lengthSq()
+}
+
+function PlaceholderHarpoon() {
+  return (
+    <group>
+      <mesh rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.035, 0.045, HARPOON_LENGTH * 0.82, 8]} />
+        <meshStandardMaterial color="#b8c4cc" metalness={0.6} roughness={0.35} />
+      </mesh>
+      <mesh position={[0, 0, HARPOON_LENGTH * 0.48]} rotation={[Math.PI / 2, 0, 0]}>
+        <coneGeometry args={[0.09, HARPOON_LENGTH * 0.22, 8]} />
+        <meshStandardMaterial color="#e2e8f0" metalness={0.75} roughness={0.25} />
+      </mesh>
+    </group>
+  )
+}
+
+function HarpoonMesh({ url }: { url: string }) {
+  const { scene } = useGLTF(url)
+
+  const { model, normalizedScale } = useMemo(() => {
+    const copy = scene.clone(true)
+
+    copy.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return
+      child.frustumCulled = false
+
+      const materials = Array.isArray(child.material)
+        ? child.material
+        : [child.material]
+
+      materials.forEach((mat) => {
+        if (!mat) return
+        mat.side = THREE.DoubleSide
+        if (mat instanceof THREE.MeshStandardMaterial) {
+          mat.metalness = Math.min(mat.metalness, 0.45)
+          mat.roughness = Math.max(mat.roughness, 0.35)
+        }
+        mat.needsUpdate = true
+      })
+    })
+
+    copy.updateMatrixWorld(true)
+    const size = new THREE.Box3().setFromObject(copy).getSize(new THREE.Vector3())
+    const longest = Math.max(size.x, size.y, size.z)
+    const scale =
+      longest > 0.0001 && Number.isFinite(longest)
+        ? HARPOON_LENGTH / longest
+        : 1
+
+    return { model: copy, normalizedScale: scale }
+  }, [scene])
+
+  return (
+    <group scale={normalizedScale} rotation={HARPOON_MODEL_ROTATION}>
+      <primitive object={model} />
+    </group>
+  )
+}
+
+function HarpoonView({ projectile }: { projectile: HarpoonProjectile }) {
+  const groupRef = useRef<THREE.Group>(null)
+  const lookTarget = useRef(new THREE.Vector3())
+
+  useFrame(() => {
+    const body = groupRef.current
+    if (!body) return
+
+    body.position.copy(projectile.position)
+
+    if (projectile.velocity.lengthSq() > 1e-4) {
+      lookTarget.current.copy(projectile.position).add(projectile.velocity)
+      body.lookAt(lookTarget.current)
+    }
+  })
+
+  return (
+    <group ref={groupRef} position={projectile.position}>
+      {harpoonUrl ? (
+        <Suspense fallback={<PlaceholderHarpoon />}>
+          <HarpoonMesh url={harpoonUrl} />
+        </Suspense>
+      ) : (
+        <PlaceholderHarpoon />
+      )}
+    </group>
+  )
+}
+
 export function TorpedoLauncher({ session }: { session: GameSession }) {
   const camera = useThree((state) => state.camera)
+  const { status } = useGameSession(session)
 
-  const torpedoes = useMemo(
-    () => Array.from({ length: MAX_TORPEDOES }, () => new Torpedo()),
-    [],
-  )
-  const groups = useRef<(THREE.Group | null)[]>([])
+  const [projectiles, setProjectiles] = useState<HarpoonProjectile[]>([])
+  const activeRef = useRef<HarpoonProjectile[]>([])
+  const nextId = useRef(1)
+  const cooldownRef = useRef(0)
+
+  const isHoldingRef = useRef(false)
+  const isChargingRef = useRef(false)
+  const chargeRef = useRef(0)
+
+  const prevPos = useRef(new THREE.Vector3())
   const forward = useRef(new THREE.Vector3())
-  const origin = useRef(new THREE.Vector3())
-  const aim = useRef(new THREE.Vector3())
-  const lastShot = useRef(0)
+  const aimPoint = useRef(new THREE.Vector3())
+  const launchDir = useRef(new THREE.Vector3())
+  const hitDir = useRef(new THREE.Vector3())
+  const scratchAB = useRef(new THREE.Vector3())
+  const scratchAP = useRef(new THREE.Vector3())
+
+  const fireHarpoon = useCallback(
+    (chargeLevel: number) => {
+      if (!session.isPlaying) return
+
+      cooldownRef.current = FIRE_COOLDOWN
+      const launchSpeed = THREE.MathUtils.lerp(
+        MIN_LAUNCH_SPEED,
+        MAX_LAUNCH_SPEED,
+        chargeLevel,
+      )
+
+      camera.getWorldDirection(forward.current).normalize()
+
+      const spawnPos = camera.position
+        .clone()
+        .addScaledVector(forward.current, 1.8)
+        .add(new THREE.Vector3(0, -0.35, 0))
+
+      aimPoint.current.copy(camera.position).addScaledVector(forward.current, 40)
+      launchDir.current.subVectors(aimPoint.current, spawnPos).normalize()
+
+      const harpoon: HarpoonProjectile = {
+        id: nextId.current++,
+        position: spawnPos,
+        velocity: launchDir.current.multiplyScalar(launchSpeed).clone(),
+        age: 0,
+      }
+
+      activeRef.current = [...activeRef.current, harpoon]
+      setProjectiles(activeRef.current)
+    },
+    [camera, session],
+  )
 
   useEffect(() => {
-    const onMouseDown = (event: MouseEvent) => {
-      // Only while the mouse is captured, so the click that captures it does not fire.
-      if (event.button !== 0 || !document.pointerLockElement || !session.isPlaying) return
+    if (status !== 'playing') {
+      activeRef.current = []
+      setProjectiles([])
+      isHoldingRef.current = false
+      isChargingRef.current = false
+      chargeRef.current = 0
+      session.setHarpoonCharge(0)
+    }
+  }, [status, session])
 
-      const now = performance.now()
-      if (now - lastShot.current < FIRE_COOLDOWN_MS) return
-
-      const torpedo = torpedoes.find((candidate) => !candidate.active)
-      if (!torpedo) return
-
-      lastShot.current = now
-      camera.getWorldDirection(forward.current)
-      origin.current.copy(camera.position).addScaledVector(forward.current, 2)
-      torpedo.launch(origin.current, forward.current)
+  // Hold Left Click to charge; release Left Click to launch.
+  useEffect(() => {
+    const cancelCharge = () => {
+      isHoldingRef.current = false
+      isChargingRef.current = false
+      chargeRef.current = 0
+      session.setHarpoonCharge(0)
     }
 
-    window.addEventListener('mousedown', onMouseDown)
-    return () => window.removeEventListener('mousedown', onMouseDown)
-  }, [camera, session, torpedoes])
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return
+      if (!session.isPlaying || !document.pointerLockElement) return
 
-  useFrame((_, delta) => {
-    torpedoes.forEach((torpedo, index) => {
-      if (torpedo.active) {
-        torpedo.update(Math.min(delta, 0.1))
+      isHoldingRef.current = true
+      if (cooldownRef.current <= 0) {
+        isChargingRef.current = true
+        chargeRef.current = 0.05
+        session.setHarpoonCharge(0.05)
+      }
+    }
 
-        const target = session.mobs.find(
-          (mob) => mob.isAlive && torpedo.hits(mob.position, mob.hitRadius),
-        )
+    const handlePointerUp = (event: PointerEvent) => {
+      if (event.button !== 0) return
+      isHoldingRef.current = false
 
-        if (target) {
-          session.scoreHit(target, torpedo.velocity)
-          if (!target.isDodging) {
-            torpedo.detonate()
+      if (isChargingRef.current) {
+        const releaseCharge = chargeRef.current
+        isChargingRef.current = false
+        chargeRef.current = 0
+        session.setHarpoonCharge(0)
+        fireHarpoon(releaseCharge)
+      }
+    }
+
+    const handlePointerLockChange = () => {
+      if (!document.pointerLockElement && isChargingRef.current) {
+        cancelCharge()
+      }
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown)
+    window.addEventListener('pointerup', handlePointerUp)
+    document.addEventListener('pointerlockchange', handlePointerLockChange)
+
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown)
+      window.removeEventListener('pointerup', handlePointerUp)
+      document.removeEventListener('pointerlockchange', handlePointerLockChange)
+    }
+  }, [fireHarpoon, session])
+
+  useFrame((_, rawDelta) => {
+    const delta = Math.min(rawDelta, 0.1)
+
+    if (cooldownRef.current > 0) {
+      cooldownRef.current = Math.max(0, cooldownRef.current - delta)
+    }
+
+    // Start charging automatically if the player kept holding Left Click through reload cooldown.
+    if (
+      session.isPlaying &&
+      document.pointerLockElement &&
+      isHoldingRef.current &&
+      !isChargingRef.current &&
+      cooldownRef.current <= 0
+    ) {
+      isChargingRef.current = true
+      chargeRef.current = 0.05
+    }
+
+    if (isChargingRef.current) {
+      chargeRef.current = Math.min(1, chargeRef.current + delta / CHARGE_DURATION)
+      session.setHarpoonCharge(chargeRef.current)
+    }
+
+    if (!session.isPlaying || activeRef.current.length === 0) return
+
+    let listChanged = false
+    const surviving: HarpoonProjectile[] = []
+
+    for (const harpoon of activeRef.current) {
+      harpoon.age += delta
+      prevPos.current.copy(harpoon.position)
+
+      // 1. Hydrodynamic water drag bleeds momentum over distance.
+      harpoon.velocity.multiplyScalar(Math.exp(-WATER_DRAG * delta))
+
+      // 2. Underwater gravity pulls the harpoon downward into an arc.
+      harpoon.velocity.y -= HARPOON_GRAVITY * delta
+
+      // 3. Advance position.
+      harpoon.position.addScaledVector(harpoon.velocity, delta)
+
+      // 4. Swept segment collision check against fish.
+      let hitTarget = false
+      const speed = harpoon.velocity.length()
+
+      if (speed >= MIN_EFFECTIVE_SPEED) {
+        hitDir.current.copy(harpoon.velocity).divideScalar(speed)
+
+        for (const mob of session.mobs) {
+          if (!mob.isAlive) continue
+
+          const hitThreshold = mob.hitRadius + HARPOON_HIT_RADIUS
+          const distSq = distanceSqToSegment(
+            mob.position,
+            prevPos.current,
+            harpoon.position,
+            scratchAB.current,
+            scratchAP.current,
+          )
+
+          if (distSq <= hitThreshold * hitThreshold) {
+            session.scoreHit(mob, hitDir.current)
+            hitTarget = true
+            break
           }
         }
       }
 
-      const group = groups.current[index]
-      if (!group) return
+      const outOfPower = speed < MIN_EFFECTIVE_SPEED
+      const expired = harpoon.age >= MAX_LIFETIME
+      const tooFar = harpoon.position.distanceToSquared(camera.position) > 110 * 110
 
-      group.visible = torpedo.active
-
-      if (torpedo.active) {
-        group.position.copy(torpedo.position)
-        aim.current.copy(torpedo.position).add(torpedo.velocity)
-        group.lookAt(aim.current)
+      if (hitTarget || outOfPower || expired || tooFar) {
+        listChanged = true
+      } else {
+        surviving.push(harpoon)
       }
-    })
+    }
+
+    if (listChanged) {
+      activeRef.current = surviving
+      setProjectiles(surviving)
+    }
   })
 
   return (
     <>
-      {torpedoes.map((_, index) => (
-        <group
-          key={index}
-          ref={(node) => {
-            groups.current[index] = node
-          }}
-          visible={false}
-        >
-          <mesh rotation={[Math.PI / 2, 0, 0]}>
-            <capsuleGeometry args={[0.08, 0.6, 4, 8]} />
-            <meshBasicMaterial color="#ffd166" />
-          </mesh>
-        </group>
+      {projectiles.map((harpoon) => (
+        <HarpoonView key={harpoon.id} projectile={harpoon} />
       ))}
     </>
   )
