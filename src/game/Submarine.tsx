@@ -8,18 +8,23 @@ import {
   BOOST_MULTIPLIER,
   COCKPIT_OFFSET,
   CRUISE_SPEED,
+  INVULNERABLE_SECONDS,
   MAX_HULL,
   OCEAN_HALF_SIZE,
   SEABED_Y,
   SURFACE_Y,
   WATER_DRAG,
 } from './config'
+import type { GameSession } from './GameSession'
 
 // Game logic for the player's submarine. No rendering in here.
 export class Submarine {
+  readonly position = new THREE.Vector3()
+  readonly heading = new THREE.Vector3(0, 0, -1)
   readonly velocity = new THREE.Vector3()
 
   private hull = MAX_HULL
+  private invulnerableFor = 0
   private readonly target = new THREE.Vector3()
 
   get hullIntegrity() {
@@ -30,12 +35,30 @@ export class Submarine {
     return this.hull <= 0
   }
 
-  takeDamage(amount: number) {
+  syncTransform(position: THREE.Vector3, heading: THREE.Vector3) {
+    this.position.copy(position)
+    this.heading.copy(heading)
+  }
+
+  // Counts down the grace period after a hit.
+  tick(delta: number) {
+    this.invulnerableFor = Math.max(0, this.invulnerableFor - delta)
+  }
+
+  // Returns true if the hit landed (false during the grace period).
+  takeDamage(amount: number): boolean {
+    if (amount <= 0 || this.invulnerableFor > 0 || this.isDestroyed) return false
+
     this.hull = Math.max(0, this.hull - amount)
+    this.invulnerableFor = INVULNERABLE_SECONDS
+    return true
   }
 
   reset() {
     this.hull = MAX_HULL
+    this.invulnerableFor = 0
+    this.position.set(0, 0, 0)
+    this.heading.set(0, 0, -1)
     this.velocity.set(0, 0, 0)
   }
 
@@ -97,12 +120,13 @@ export function Cockpit() {
   return null
 }
 
-export function FlightControls({ submarine }: { submarine: Submarine }) {
+export function FlightControls({ session }: { session: GameSession }) {
   const camera = useThree((state) => state.camera)
 
   const keys = useRef(new Set<string>())
   const direction = useRef(new THREE.Vector3())
   const movement = useRef(new THREE.Vector3())
+  const forward = useRef(new THREE.Vector3())
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -128,6 +152,7 @@ export function FlightControls({ submarine }: { submarine: Submarine }) {
 
   useFrame((_, delta) => {
     const k = keys.current
+    const flying = session.isPlaying
 
     // "C" is an alternate descend key, because Ctrl+W closes the browser tab.
     direction.current.set(
@@ -141,15 +166,17 @@ export function FlightControls({ submarine }: { submarine: Submarine }) {
         Number(k.has('KeyW') || k.has('ArrowUp')),
     )
 
-    if (direction.current.lengthSq() > 1) {
-      direction.current.normalize()
-    }
+    // After Game Over the sub ignores input and glides to a stop.
+    if (!flying) direction.current.set(0, 0, 0)
+    if (direction.current.lengthSq() > 1) direction.current.normalize()
 
-    const boosting = k.has('ShiftLeft') || k.has('ShiftRight')
-    submarine.steer(direction.current, boosting, delta)
+    const boosting = flying && (k.has('ShiftLeft') || k.has('ShiftRight'))
+    session.submarine.steer(direction.current, boosting, delta)
 
     // Move relative to the direction the pilot is looking.
-    movement.current.copy(submarine.velocity).applyQuaternion(camera.quaternion)
+    movement.current
+      .copy(session.submarine.velocity)
+      .applyQuaternion(camera.quaternion)
     camera.position.addScaledVector(movement.current, delta)
 
     // Stay inside the ocean: above the seabed, below the surface, inside the arena.
@@ -168,6 +195,9 @@ export function FlightControls({ submarine }: { submarine: Submarine }) {
       -OCEAN_HALF_SIZE,
       OCEAN_HALF_SIZE,
     )
+
+    camera.getWorldDirection(forward.current)
+    session.submarine.syncTransform(camera.position, forward.current)
   })
 
   return null

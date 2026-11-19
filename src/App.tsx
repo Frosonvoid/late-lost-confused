@@ -1,7 +1,10 @@
+import { useState } from 'react'
 import { Canvas } from '@react-three/fiber'
 
 import { ErrorBoundary } from './game/ErrorBoundary'
 import { GameScene } from './game/GameScene'
+import { GameSession } from './game/GameSession'
+import { Hud } from './game/Hud'
 
 // Any crash is printed on screen instead of leaving a white page.
 function ErrorScreen(error: Error) {
@@ -21,6 +24,8 @@ function ErrorScreen(error: Error) {
 }
 
 export default function App() {
+  const [session] = useState(() => new GameSession())
+
   return (
     <div
       style={{
@@ -40,7 +45,7 @@ export default function App() {
           }}
           gl={{ antialias: true }}
         >
-          <GameScene />
+          <GameScene session={session} />
         </Canvas>
       </ErrorBoundary>
 
@@ -71,7 +76,10 @@ export default function App() {
         +
       </div>
 
-      {/* Submarine HUD */}
+      {/* Score, hull, objective and Game Over screen */}
+      <Hud session={session} />
+
+      {/* Controls */}
       <div
         style={{
           position: 'absolute',
@@ -93,7 +101,9 @@ export default function App() {
         <br />
         SHIFT — BOOST
         <br />
-        MOUSE — LOOK
+        MOUSE — LOOK / AIM
+        <br />
+        LEFT CLICK — FIRE TORPEDO
         <br />
         ESC — RELEASE MOUSE
       </div>

@@ -31,3 +31,13 @@ export const LIONFISH_CLIPS = {
   fast: 'dolphinswim',
   idle: 'idleswim',
 }
+
+// Combat
+export const TORPEDO_SPEED = 70
+export const TORPEDO_LIFETIME = 3 // seconds before a missed torpedo disappears
+export const TORPEDO_RADIUS = 0.3
+export const MAX_TORPEDOES = 8
+export const FIRE_COOLDOWN_MS = 400
+export const SUB_COLLISION_RADIUS = 1.5 // how big the submarine is for fish collisions
+export const INVULNERABLE_SECONDS = 1 // grace period after the hull takes a hit
+export const RESPAWN_SECONDS = 3 // how long a destroyed fish stays gone
