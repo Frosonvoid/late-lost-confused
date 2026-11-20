@@ -4,6 +4,7 @@ import { PointerLockControls } from '@react-three/drei'
 import * as THREE from 'three'
 
 import { DeepSea } from './DeepSea'
+import { OceanFloorFlora } from './OceanFloorFlora'
 import { useGameSession, type GameSession } from './GameSession'
 import { MobsLayer } from './MobViews'
 import { Cockpit, FlightControls } from './Submarine'
@@ -63,6 +64,7 @@ export function GameScene({ session }: { session: GameSession }) {
       <FlightControls session={session} />
 
       <DeepSea />
+      <OceanFloorFlora />
       <MobsLayer session={session} />
       <TorpedoLauncher session={session} />
 
