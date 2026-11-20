@@ -5,8 +5,8 @@ import * as THREE from 'three'
 
 import { useGameSession, type GameSession } from './GameSession'
 
-// --- Tunable Harpoon Charge & Water Physics Constants ---
-const HARPOON_LENGTH = 2.4
+// --- Tunable Harpoon Charge, Size & Water Physics Constants ---
+const HARPOON_LENGTH = 3.8 // Enlarged length for clear underwater silhouette (up from 2.4)
 const MIN_LAUNCH_SPEED = 32 // Quick tap: weaker launch, drops & slows down sooner
 const MAX_LAUNCH_SPEED = 105 // Full charge: high-powered pneumatic shot, flat trajectory
 const CHARGE_DURATION = 1.0 // Seconds to reach 100% charge
@@ -15,7 +15,7 @@ const HARPOON_GRAVITY = 6.8 // Downward pull causing slower/longer shots to sink
 const MIN_EFFECTIVE_SPEED = 5.5 // Despawns once piercing momentum is spent
 const MAX_LIFETIME = 5.0
 const FIRE_COOLDOWN = 0.25
-const HARPOON_HIT_RADIUS = 0.45
+const HARPOON_HIT_RADIUS = 0.55 // Scaled hitbox to match the larger harpoon
 
 // Blender's Z-axis (Up) maps to Three.js's Y-axis in .glb exports.
 const HARPOON_MODEL_ROTATION: [number, number, number] = [0, Math.PI / 2, 0]
@@ -62,12 +62,24 @@ function PlaceholderHarpoon() {
   return (
     <group>
       <mesh rotation={[Math.PI / 2, 0, 0]}>
-        <cylinderGeometry args={[0.035, 0.045, HARPOON_LENGTH * 0.82, 8]} />
-        <meshStandardMaterial color="#b8c4cc" metalness={0.6} roughness={0.35} />
+        <cylinderGeometry args={[0.06, 0.075, HARPOON_LENGTH * 0.82, 10]} />
+        <meshStandardMaterial
+          color="#d8e6f0"
+          emissive="#38bdf8"
+          emissiveIntensity={0.35}
+          metalness={0.25}
+          roughness={0.3}
+        />
       </mesh>
       <mesh position={[0, 0, HARPOON_LENGTH * 0.48]} rotation={[Math.PI / 2, 0, 0]}>
-        <coneGeometry args={[0.09, HARPOON_LENGTH * 0.22, 8]} />
-        <meshStandardMaterial color="#e2e8f0" metalness={0.75} roughness={0.25} />
+        <coneGeometry args={[0.14, HARPOON_LENGTH * 0.22, 10]} />
+        <meshStandardMaterial
+          color="#f1f5f9"
+          emissive="#7dd3fc"
+          emissiveIntensity={0.45}
+          metalness={0.3}
+          roughness={0.25}
+        />
       </mesh>
     </group>
   )
@@ -91,8 +103,12 @@ function HarpoonMesh({ url }: { url: string }) {
         if (!mat) return
         mat.side = THREE.DoubleSide
         if (mat instanceof THREE.MeshStandardMaterial) {
-          mat.metalness = Math.min(mat.metalness, 0.45)
+          // Keep metallic reflections low and add a subtle sonar-cyan sheen so the
+          // harpoon stands out clearly against dark deep-sea water.
+          mat.metalness = Math.min(mat.metalness, 0.2)
           mat.roughness = Math.max(mat.roughness, 0.35)
+          mat.emissive.set('#38bdf8')
+          mat.emissiveIntensity = 0.35
         }
         mat.needsUpdate = true
       })
@@ -118,6 +134,7 @@ function HarpoonMesh({ url }: { url: string }) {
 
 function HarpoonView({ projectile }: { projectile: HarpoonProjectile }) {
   const groupRef = useRef<THREE.Group>(null)
+  const wakeRef = useRef<THREE.Mesh>(null)
   const lookTarget = useRef(new THREE.Vector3())
 
   useFrame(() => {
@@ -126,9 +143,21 @@ function HarpoonView({ projectile }: { projectile: HarpoonProjectile }) {
 
     body.position.copy(projectile.position)
 
-    if (projectile.velocity.lengthSq() > 1e-4) {
+    const speedSq = projectile.velocity.lengthSq()
+    if (speedSq > 1e-4) {
       lookTarget.current.copy(projectile.position).add(projectile.velocity)
       body.lookAt(lookTarget.current)
+    }
+
+    // Stretch the cavitation wake trail proportionally to current speed.
+    const wake = wakeRef.current
+    if (wake) {
+      const speedRatio = THREE.MathUtils.clamp(
+        Math.sqrt(speedSq) / MAX_LAUNCH_SPEED,
+        0.15,
+        1.2,
+      )
+      wake.scale.set(1, speedRatio, 1)
     }
   })
 
@@ -141,6 +170,25 @@ function HarpoonView({ projectile }: { projectile: HarpoonProjectile }) {
       ) : (
         <PlaceholderHarpoon />
       )}
+
+      {/* Hydrodynamic bubble/sonar wake trail behind the harpoon */}
+      <mesh
+        ref={wakeRef}
+        position={[0, 0, -HARPOON_LENGTH * 0.95]}
+        rotation={[Math.PI / 2, 0, 0]}
+      >
+        <cylinderGeometry args={[0.11, 0.008, HARPOON_LENGTH * 1.15, 10]} />
+        <meshBasicMaterial
+          color="#7dd3fc"
+          transparent
+          opacity={0.42}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+        />
+      </mesh>
+
+      {/* Local glint light so the harpoon illuminates nearby water & fish in flight */}
+      <pointLight color="#38bdf8" intensity={4.5} distance={10} decay={2} />
     </group>
   )
 }
@@ -181,7 +229,7 @@ export function TorpedoLauncher({ session }: { session: GameSession }) {
 
       const spawnPos = camera.position
         .clone()
-        .addScaledVector(forward.current, 1.8)
+        .addScaledVector(forward.current, 2.3)
         .add(new THREE.Vector3(0, -0.35, 0))
 
       aimPoint.current.copy(camera.position).addScaledVector(forward.current, 40)
